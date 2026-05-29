@@ -1140,17 +1140,33 @@ function Dashboard({ sb, menu, setMenu, search, setSearch, filterLv, setFilterLv
 
 import React from "react"
 
+// ── AUTO-CONNECT จาก Environment Variables ────────────────────
+const ENV_URL = import.meta.env.VITE_SUPABASE_URL || ""
+const ENV_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || ""
+
 export default function App(){
-  const[connected,setConnected]=useState(false)
-  const[sb,setSb]=useState(null)
+  const initUrl = ENV_URL || store.get("mc_url") || ""
+  const initKey = ENV_KEY || store.get("mc_key") || ""
+  const autoConnect = !!(initUrl && initKey)
+
+  const[connected,setConnected]=useState(autoConnect)
+  const[sb,setSb]=useState(autoConnect ? createClient(initUrl, initKey) : null)
   const[menu,setMenu]=useState("dashboard")
   const[search,setSearch]=useState("")
   const[filterLv,setFilterLv]=useState("ทั้งหมด")
   const[modal,setModal]=useState(null)
   const toast=useToast()
-  useEffect(()=>{const u=store.get("mc_url")||"";const k=store.get("mc_key")||"";if(u&&k){setSb(createClient(u,k));setConnected(true)}},[])
-  const handleReady=(url,key)=>{setSb(createClient(url,key));setConnected(true)}
-  const handleDisconnect=()=>{store.remove("mc_url");store.remove("mc_key");setSb(null);setConnected(false)}
+
+  const handleReady=(url,key)=>{
+    store.set("mc_url",url); store.set("mc_key",key)
+    setSb(createClient(url,key)); setConnected(true)
+  }
+  const handleDisconnect=()=>{
+    // ถ้ามี env vars จะไม่ logout จริง แค่ reload
+    if(ENV_URL && ENV_KEY){ window.location.reload(); return }
+    store.remove("mc_url"); store.remove("mc_key"); setSb(null); setConnected(false)
+  }
+
   if(!connected||!sb)return <SetupScreen onReady={handleReady}/>
   return <ErrorBoundary><Dashboard sb={sb} menu={menu} setMenu={setMenu} search={search} setSearch={setSearch} filterLv={filterLv} setFilterLv={setFilterLv} toast={toast} modal={modal} setModal={setModal} onDisconnect={handleDisconnect}/></ErrorBoundary>
 }
