@@ -705,9 +705,176 @@ function ClassroomSession({sb,classes,toast,onExit,onReload}){
 }
 
 // ── TEACHER ROOM ──────────────────────────────────────────────
+// ── SESSION DETAIL MODAL ──────────────────────────────────────
+function SessionDetailModal({sb,session,onClose,toast,onReload}){
+  const[att,setAtt]=useState([])
+  const[beh,setBeh]=useState([])
+  const[ass,setAss]=useState([])
+  const[imgs,setImgs]=useState([])
+  const[loading,setLoading]=useState(true)
+  const[uploading,setUploading]=useState(false)
+  const imgRef=useRef()
+
+  const supabaseUrl=(store.get("mc_url")||ENV_URL||"").replace(/\/$/,"")
+  const supabaseKey=store.get("mc_key")||ENV_KEY||""
+
+  useEffect(()=>{
+    if(!session?.id)return
+    Promise.all([
+      sb.from("attendance").select("*,students(student_no,full_name)").eq("session_id",session.id),
+      sb.from("behavior_logs").select("*,students(student_no,full_name)").eq("session_id",session.id),
+      sb.from("assessments").select("*,students(student_no,full_name)").eq("session_id",session.id),
+      sb.from("session_images").select("*").eq("session_id",session.id),
+    ]).then(([a,bh,as,im])=>{
+      setAtt(a.data||[]);setBeh(bh.data||[]);setAss(as.data||[]);setImgs(im.data||[])
+    }).finally(()=>setLoading(false))
+  },[session?.id])
+
+  const attCounts=att.reduce((a,v)=>{a[v.status]=(a[v.status]||0)+1;return a},{})
+  const assGroups=ass.reduce((a,v)=>{a[v.level]=[...(a[v.level]||[]),v];return a},{})
+
+  const uploadImage=async(file)=>{
+    if(!file)return
+    if(file.size>5*1024*1024){toast.err("ไฟล์ใหญ่เกิน 5MB");return}
+    if(imgs.length>=3){toast.err("แนบได้สูงสุด 3 รูป");return}
+    setUploading(true)
+    try{
+      // Upload to Supabase Storage via REST API
+      const ext=file.name.split(".").pop().toLowerCase()
+      const fname=`${session.id}_${Date.now()}.${ext}`
+      const uploadUrl=`${supabaseUrl}/storage/v1/object/activity-images/${fname}`
+      const r=await fetch(uploadUrl,{
+        method:"POST",
+        headers:{apikey:supabaseKey,Authorization:`Bearer ${supabaseKey}`,"Content-Type":file.type,"x-upsert":"true"},
+        body:file
+      })
+      if(!r.ok){
+        // If storage not configured, fallback to base64 inline storage
+        const reader=new FileReader()
+        reader.onload=async e=>{
+          const{error}=await sb.from("session_images").insert({session_id:session.id,image_url:e.target.result})
+          if(error){toast.err("บันทึกรูปไม่ได้: "+error.message);setUploading(false);return}
+          const{data}=await sb.from("session_images").select("*").eq("session_id",session.id)
+          setImgs(data||[]);toast.ok("แนบรูปแล้ว ✅");setUploading(false)
+        }
+        reader.readAsDataURL(file)
+        return
+      }
+      const pubUrl=`${supabaseUrl}/storage/v1/object/public/activity-images/${fname}`
+      const{error}=await sb.from("session_images").insert({session_id:session.id,image_url:pubUrl})
+      if(error)throw new Error(error.message)
+      const{data}=await sb.from("session_images").select("*").eq("session_id",session.id)
+      setImgs(data||[]);toast.ok("แนบรูปแล้ว ✅")
+    }catch(e){toast.err("อัปโหลดไม่ได้: "+e.message)}
+    finally{setUploading(false)}
+  }
+
+  const deleteImage=async(img)=>{
+    if(!window.confirm("ลบรูปนี้?"))return
+    await sb.from("session_images").delete().eq("id",img.id)
+    setImgs(p=>p.filter(i=>i.id!==img.id));toast.ok("ลบรูปแล้ว")
+  }
+
+  const Section=({title,children})=>(
+    <div style={{marginBottom:18}}>
+      <div style={{fontSize:13,fontWeight:700,color:T.sub,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>{title}</div>
+      {children}
+    </div>
+  )
+
+  return(
+    <Modal title="บันทึกการสอน" wide={620} onClose={onClose}
+      sub={`${session?.classes?.class_name||""} · ${session?.teach_date?thaiDate(session.teach_date):""} · ${session?.status==="saved"?"✓ สมบูรณ์":"ร่าง"}`}>
+      {loading?<PageLoad/>:(
+        <div>
+          {/* Info */}
+          {session.topic&&<div style={{background:`linear-gradient(135deg,${T.purpleL},${T.blueL})`,borderRadius:12,padding:"12px 16px",marginBottom:16}}>
+            <div style={{fontSize:16,fontWeight:700,color:T.purpleD,marginBottom:4}}>{session.topic}</div>
+            {session.objective&&<div style={{fontSize:13,color:T.sub}}>{session.objective}</div>}
+          </div>}
+          {session.activities&&<Section title="กิจกรรมการเรียนรู้"><div style={{fontSize:13.5,color:T.text,lineHeight:1.8,background:"#F8FAFC",borderRadius:10,padding:"10px 14px"}}>{session.activities}</div></Section>}
+
+          {/* Attendance */}
+          {att.length>0&&<Section title={`การเข้าเรียน (${att.length} คน)`}>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
+              {Object.entries(ATT_CFG).map(([k,c])=>attCounts[k]>0&&<span key={k} style={b.pill(c.color,c.bg)}>{c.label}: {attCounts[k]}</span>)}
+            </div>
+            {att.filter(a=>a.status!=="present").length>0&&(
+              <div style={{background:T.orangeL,borderRadius:10,padding:"10px 14px",fontSize:13}}>
+                <b>ไม่มาเรียน: </b>{att.filter(a=>a.status!=="present").map(a=>`${a.students?.full_name||"—"} (${ATT_CFG[a.status]?.label||a.status})`).join(", ")}
+              </div>
+            )}
+          </Section>}
+
+          {/* Assessment */}
+          {ass.length>0&&<Section title={`ผลการประเมิน (${ass.length} คน)`}>
+            {Object.entries(assGroups).map(([lv,list])=>(
+              <div key={lv} style={{marginBottom:6}}>
+                <span style={b.pill(ASSESS_CFG[lv]?.color||T.muted,ASSESS_CFG[lv]?.bg||"#F8FAFC")}>{ASSESS_CFG[lv]?.icon} {ASSESS_CFG[lv]?.label||lv}: {list.length} คน</span>
+                {list.some(a=>a.note)&&<div style={{fontSize:12,color:T.sub,marginTop:4,paddingLeft:8}}>{list.filter(a=>a.note).map(a=>`${a.students?.full_name}: ${a.note}`).join(" | ")}</div>}
+              </div>
+            ))}
+            <div style={{fontSize:13,color:T.sub,marginTop:6}}>
+              ผ่าน: <b style={{color:T.green}}>{ass.filter(a=>ASSESS_CFG[a.level]?.pass).length}</b> คน &nbsp;|&nbsp;
+              ต้องพัฒนา: <b style={{color:T.orange}}>{ass.filter(a=>!ASSESS_CFG[a.level]?.pass).length}</b> คน
+            </div>
+          </Section>}
+
+          {/* Behavior */}
+          {beh.length>0&&<Section title={`พฤติกรรม/คะแนน (${beh.length} คน)`}>
+            <div style={{display:"flex",flexDirection:"column",gap:5}}>
+              {beh.map((bh,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",borderRadius:8,background:bh.points>0?T.greenL:bh.points<0?T.redL:"#F8FAFC",fontSize:13}}>
+                  <span>{bh.icon||"📝"}</span>
+                  <span style={{flex:1}}>{bh.students?.student_no?`${bh.students.student_no}. `:""}{bh.students?.full_name||"—"}</span>
+                  {bh.points!==0&&<span style={{fontWeight:700,color:bh.points>0?T.green:T.red}}>{bh.points>0?"+":""}{bh.points}</span>}
+                  {bh.behavior&&<span style={{color:T.muted,fontSize:12}}>{bh.behavior}</span>}
+                </div>
+              ))}
+            </div>
+          </Section>}
+
+          {/* Post-teaching notes */}
+          {(session.highlights||session.problems||session.improvements||session.reflection)&&(
+            <Section title="บันทึกหลังสอน">
+              {[["✨ จุดเด่น",session.highlights,T.greenL],["⚠️ ปัญหา",session.problems,T.redL],["🔧 ปรับปรุง",session.improvements,T.yellowL],["💭 Reflection",session.reflection,T.blueL]].map(([k,v,bg])=>v&&(
+                <div key={k} style={{marginBottom:8,padding:"10px 14px",background:bg,borderRadius:10,fontSize:13.5}}>
+                  <b style={{color:T.text}}>{k}: </b>{v}
+                </div>
+              ))}
+            </Section>
+          )}
+
+          {/* Images */}
+          <Section title="ภาพหลักฐานการจัดกิจกรรม">
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:12}}>
+              {imgs.map((img,i)=>(
+                <div key={img.id} style={{position:"relative",aspectRatio:"4/3",borderRadius:12,overflow:"hidden",border:`1px solid ${T.border}`,background:"#F8FAFC"}}>
+                  <img src={img.image_url} alt={`รูปที่ ${i+1}`} style={{width:"100%",height:"100%",objectFit:"cover"}} onError={e=>{e.target.style.display="none"}}/>
+                  <button onClick={()=>deleteImage(img)} style={{position:"absolute",top:5,right:5,width:24,height:24,borderRadius:"50%",background:"rgba(0,0,0,0.6)",border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    <X size={12} color="#fff"/>
+                  </button>
+                </div>
+              ))}
+              {imgs.length<3&&(
+                <div onClick={()=>!uploading&&imgRef.current?.click()} style={{aspectRatio:"4/3",borderRadius:12,border:`2px dashed ${T.border}`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,cursor:uploading?"wait":"pointer",background:"#F8FAFC",transition:"all 0.15s"}}>
+                  {uploading?<Spin size={22}/>:<><Upload size={22} color={T.muted}/><span style={{fontSize:12,color:T.muted,fontWeight:600}}>แนบรูป</span><span style={{fontSize:11,color:T.muted}}>{3-imgs.length} รูปที่เหลือ</span></>}
+                </div>
+              )}
+            </div>
+            <input ref={imgRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>{if(e.target.files[0]){uploadImage(e.target.files[0]);e.target.value=""}}}/>
+            <div style={{fontSize:12,color:T.muted}}>รองรับ JPG, PNG, WEBP · สูงสุด 3 รูป · ไม่เกิน 5MB/รูป</div>
+          </Section>
+        </div>
+      )}
+    </Modal>
+  )
+}
+
 function TeacherRoom({sb,toast,onEnterClass}){
   const[tab,setTab]=useState("home")
   const[modal,setModal]=useState(null)
+  const[viewSession,setViewSession]=useState(null)
   const[search,setSearch]=useState("")
   const[filterLv,setFilterLv]=useState("ทั้งหมด")
 
@@ -898,17 +1065,20 @@ function TeacherRoom({sb,toast,onEnterClass}){
 
           {/* SESSIONS */}
           {tab==="sessions"&&<>
-            <div style={{fontSize:14,color:T.muted,marginBottom:14}}>{allSessQ.loading?"กำลังโหลด...":`${allSess.length} บันทึก`}</div>
+            <div style={{fontSize:14,color:T.muted,marginBottom:14}}>{allSessQ.loading?"กำลังโหลด...":`${allSess.length} บันทึก · คลิกแถวเพื่อดูรายละเอียด`}</div>
             {allSessQ.loading?<PageLoad/>:!allSess.length?<EmptyState icon="📋" msg="ยังไม่มีบันทึกการสอน"/>:(
               <div style={b.card}>
                 <table style={{width:"100%",borderCollapse:"collapse"}}>
-                  <thead><tr style={{background:"#F8FAFC"}}>{["ชั้น/วิชา","หัวข้อ","วันที่","สถานะ"].map(h=><th key={h} style={{padding:"8px 14px",fontSize:12.5,color:T.muted,fontWeight:600,textAlign:"left",borderBottom:"1px solid #F1F5F9"}}>{h}</th>)}</tr></thead>
-                  <tbody>{allSess.map(s=><tr key={s.id}>
-                    <td style={{padding:"10px 14px",fontSize:13.5,color:"#334155",borderBottom:"1px solid #F8FAFC"}}><div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:8,height:8,borderRadius:"50%",background:s.classes?.color||T.purple,flexShrink:0}}/><div><div style={{fontWeight:600,fontSize:13}}>{s.classes?.class_name||"—"}</div><div style={{color:T.muted,fontSize:11.5}}>{s.classes?.subject_name}</div></div></div></td>
-                    <td style={{padding:"10px 14px",fontSize:13,color:"#64748B",maxWidth:160,borderBottom:"1px solid #F8FAFC"}}><div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.topic||"ไม่ระบุ"}</div></td>
-                    <td style={{padding:"10px 14px",fontSize:12,color:T.muted,whiteSpace:"nowrap",borderBottom:"1px solid #F8FAFC"}}>{s.teach_date?new Date(s.teach_date).toLocaleDateString("th-TH",{day:"numeric",month:"short",year:"2-digit"}):"—"}</td>
-                    <td style={{padding:"10px 14px",borderBottom:"1px solid #F8FAFC"}}><span style={{padding:"3px 10px",borderRadius:99,fontSize:12,fontWeight:700,background:s.status==="saved"?T.greenL:T.yellowL,color:s.status==="saved"?T.green:T.yellow}}>{s.status==="saved"?"✓ สมบูรณ์":"ร่าง"}</span></td>
-                  </tr>)}</tbody>
+                  <thead><tr style={{background:"#F8FAFC"}}>{["ชั้น/วิชา","หัวข้อ","วันที่","สถานะ",""].map(h=><th key={h} style={{padding:"8px 14px",fontSize:12.5,color:T.muted,fontWeight:600,textAlign:"left",borderBottom:"1px solid #F1F5F9"}}>{h}</th>)}</tr></thead>
+                  <tbody>{allSess.map(s=>(
+                    <tr key={s.id} onClick={()=>setViewSession(s)} style={{cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+                      <td style={{padding:"11px 14px",fontSize:13.5,color:"#334155",borderBottom:"1px solid #F8FAFC"}}><div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:8,height:8,borderRadius:"50%",background:s.classes?.color||T.purple,flexShrink:0}}/><div><div style={{fontWeight:600,fontSize:13}}>{s.classes?.class_name||"—"}</div><div style={{color:T.muted,fontSize:11.5}}>{s.classes?.subject_name}</div></div></div></td>
+                      <td style={{padding:"11px 14px",fontSize:13,color:"#64748B",maxWidth:160,borderBottom:"1px solid #F8FAFC"}}><div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.topic||"ไม่ระบุ"}</div></td>
+                      <td style={{padding:"11px 14px",fontSize:12,color:T.muted,whiteSpace:"nowrap",borderBottom:"1px solid #F8FAFC"}}>{s.teach_date?new Date(s.teach_date).toLocaleDateString("th-TH",{day:"numeric",month:"short",year:"2-digit"}):"—"}</td>
+                      <td style={{padding:"11px 14px",borderBottom:"1px solid #F8FAFC"}}><span style={{padding:"3px 10px",borderRadius:99,fontSize:12,fontWeight:700,background:s.status==="saved"?T.greenL:T.yellowL,color:s.status==="saved"?T.green:T.yellow}}>{s.status==="saved"?"✓ สมบูรณ์":"ร่าง"}</span></td>
+                      <td style={{padding:"11px 14px",borderBottom:"1px solid #F8FAFC",color:T.muted}}><Eye size={14}/></td>
+                    </tr>
+                  ))}</tbody>
                 </table>
               </div>
             )}
@@ -931,6 +1101,7 @@ function TeacherRoom({sb,toast,onEnterClass}){
       {modal==="paste"&&<PasteModal sb={sb} onClose={()=>setModal(null)} onDone={()=>{stuQ.reload();dashQ.reload()}} toast={toast}/>}
       {modal==="excel"&&<ImportExcelModal sb={sb} onClose={()=>setModal(null)} onDone={()=>{stuQ.reload();dashQ.reload()}} toast={toast}/>}
       {modal==="profile"&&<Modal title="ตั้งค่าโปรไฟล์" onClose={()=>setModal(null)}><ProfileForm sb={sb} profile={profQ.data} onDone={()=>{profQ.reload();setModal(null)}} toast={toast}/></Modal>}
+      {viewSession&&<SessionDetailModal sb={sb} session={viewSession} onClose={()=>setViewSession(null)} toast={toast} onReload={allSessQ.reload}/>}
     </div>
   )
 }
