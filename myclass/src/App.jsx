@@ -707,12 +707,25 @@ function ClassroomSession({sb,classes,toast,onExit,onReload}){
 // ── TEACHER ROOM ──────────────────────────────────────────────
 // ── SESSION DETAIL MODAL ──────────────────────────────────────
 function SessionDetailModal({sb,session,onClose,toast,onReload}){
+  const isDraft = session?.status === "draft"
   const[att,setAtt]=useState([])
   const[beh,setBeh]=useState([])
   const[ass,setAss]=useState([])
   const[imgs,setImgs]=useState([])
   const[loading,setLoading]=useState(true)
   const[uploading,setUploading]=useState(false)
+  const[saving,setSaving]=useState(false)
+  const[editMode,setEditMode]=useState(isDraft) // ร่างเปิด edit ทันที
+  const[form,setForm]=useState({
+    topic:session?.topic||"",
+    objective:session?.objective||"",
+    activities:session?.activities||"",
+    highlights:session?.highlights||"",
+    problems:session?.problems||"",
+    improvements:session?.improvements||"",
+    reflection:session?.reflection||"",
+    teach_date:session?.teach_date||todayStr(),
+  })
   const imgRef=useRef()
 
   const supabaseUrl=(store.get("mc_url")||ENV_URL||"").replace(/\/$/,"")
@@ -732,6 +745,18 @@ function SessionDetailModal({sb,session,onClose,toast,onReload}){
 
   const attCounts=att.reduce((a,v)=>{a[v.status]=(a[v.status]||0)+1;return a},{})
   const assGroups=ass.reduce((a,v)=>{a[v.level]=[...(a[v.level]||[]),v];return a},{})
+  const sf=(k,v)=>setForm(p=>({...p,[k]:v}))
+
+  const saveLog=async(status)=>{
+    setSaving(true)
+    try{
+      const{error}=await sb.from("teaching_sessions").update({...form,status}).eq("id",session.id)
+      if(error)throw new Error(error.message||JSON.stringify(error))
+      toast.ok(status==="saved"?"บันทึกการสอนสมบูรณ์ ✅":"บันทึกร่างแล้ว")
+      onReload(); onClose()
+    }catch(e){toast.err("บันทึกไม่สำเร็จ: "+e.message)}
+    finally{setSaving(false)}
+  }
 
   const uploadImage=async(file)=>{
     if(!file)return
@@ -739,7 +764,6 @@ function SessionDetailModal({sb,session,onClose,toast,onReload}){
     if(imgs.length>=3){toast.err("แนบได้สูงสุด 3 รูป");return}
     setUploading(true)
     try{
-      // Upload to Supabase Storage via REST API
       const ext=file.name.split(".").pop().toLowerCase()
       const fname=`${session.id}_${Date.now()}.${ext}`
       const uploadUrl=`${supabaseUrl}/storage/v1/object/activity-images/${fname}`
@@ -749,7 +773,6 @@ function SessionDetailModal({sb,session,onClose,toast,onReload}){
         body:file
       })
       if(!r.ok){
-        // If storage not configured, fallback to base64 inline storage
         const reader=new FileReader()
         reader.onload=async e=>{
           const{error}=await sb.from("session_images").insert({session_id:session.id,image_url:e.target.result})
@@ -757,8 +780,7 @@ function SessionDetailModal({sb,session,onClose,toast,onReload}){
           const{data}=await sb.from("session_images").select("*").eq("session_id",session.id)
           setImgs(data||[]);toast.ok("แนบรูปแล้ว ✅");setUploading(false)
         }
-        reader.readAsDataURL(file)
-        return
+        reader.readAsDataURL(file); return
       }
       const pubUrl=`${supabaseUrl}/storage/v1/object/public/activity-images/${fname}`
       const{error}=await sb.from("session_images").insert({session_id:session.id,image_url:pubUrl})
@@ -777,77 +799,121 @@ function SessionDetailModal({sb,session,onClose,toast,onReload}){
 
   const Section=({title,children})=>(
     <div style={{marginBottom:18}}>
-      <div style={{fontSize:13,fontWeight:700,color:T.sub,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>{title}</div>
+      <div style={{fontSize:12,fontWeight:700,color:T.sub,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>{title}</div>
       {children}
     </div>
   )
 
+  // Footer buttons
+  const footer = editMode ? (
+    <>
+      <button onClick={()=>saveLog("draft")} disabled={saving} style={{...b.btnO,flex:1,justifyContent:"center",borderColor:T.yellow,color:T.yellow,gap:6}}>
+        <Save size={15}/>บันทึกร่าง
+      </button>
+      <button onClick={()=>saveLog("saved")} disabled={saving} style={{...b.btnP(T.green),flex:2,justifyContent:"center",gap:6,opacity:saving?0.7:1}}>
+        {saving?<><Spin size={15} color="#fff"/>กำลังบันทึก...</>:<><CheckCircle size={15}/>บันทึกหลังสอน</>}
+      </button>
+    </>
+  ) : (
+    <>
+      <button onClick={()=>setEditMode(true)} style={{...b.btnO,flex:1,justifyContent:"center",gap:6}}>
+        ✏️ แก้ไข
+      </button>
+      <button onClick={onClose} style={{...b.btnP(),flex:1,justifyContent:"center",gap:6}}>
+        <Check size={15}/>ปิด
+      </button>
+    </>
+  )
+
   return(
-    <Modal title="บันทึกการสอน" wide={620} onClose={onClose}
-      sub={`${session?.classes?.class_name||""} · ${session?.teach_date?thaiDate(session.teach_date):""} · ${session?.status==="saved"?"✓ สมบูรณ์":"ร่าง"}`}>
+    <Modal title={isDraft?"📝 ร่างบันทึกการสอน — แก้ไขและบันทึก":"บันทึกการสอน"} wide={640} onClose={onClose}
+      sub={`${session?.classes?.class_name||""} · ${session?.teach_date?thaiDate(session.teach_date):""} · ${isDraft?"ร่าง — ยังไม่สมบูรณ์":"✓ สมบูรณ์"}`}
+      footer={footer}>
       {loading?<PageLoad/>:(
         <div>
-          {/* Info */}
-          {session.topic&&<div style={{background:`linear-gradient(135deg,${T.purpleL},${T.blueL})`,borderRadius:12,padding:"12px 16px",marginBottom:16}}>
-            <div style={{fontSize:16,fontWeight:700,color:T.purpleD,marginBottom:4}}>{session.topic}</div>
-            {session.objective&&<div style={{fontSize:13,color:T.sub}}>{session.objective}</div>}
+          {/* Draft banner */}
+          {isDraft&&<div style={{background:`linear-gradient(135deg,${T.yellowL},${T.orangeL})`,borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:10,border:`1px solid ${T.yellow}`}}>
+            <Bell size={18} color={T.yellow}/>
+            <div><div style={{fontSize:13.5,fontWeight:700,color:"#92400E"}}>คาบนี้ยังเป็นร่าง</div><div style={{fontSize:12.5,color:"#B45309"}}>กรอกบันทึกหลังสอนแล้วกด "บันทึกหลังสอน" เพื่อทำให้สมบูรณ์</div></div>
           </div>}
-          {session.activities&&<Section title="กิจกรรมการเรียนรู้"><div style={{fontSize:13.5,color:T.text,lineHeight:1.8,background:"#F8FAFC",borderRadius:10,padding:"10px 14px"}}>{session.activities}</div></Section>}
 
-          {/* Attendance */}
-          {att.length>0&&<Section title={`การเข้าเรียน (${att.length} คน)`}>
-            <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
-              {Object.entries(ATT_CFG).map(([k,c])=>attCounts[k]>0&&<span key={k} style={b.pill(c.color,c.bg)}>{c.label}: {attCounts[k]}</span>)}
-            </div>
-            {att.filter(a=>a.status!=="present").length>0&&(
-              <div style={{background:T.orangeL,borderRadius:10,padding:"10px 14px",fontSize:13}}>
-                <b>ไม่มาเรียน: </b>{att.filter(a=>a.status!=="present").map(a=>`${a.students?.full_name||"—"} (${ATT_CFG[a.status]?.label||a.status})`).join(", ")}
+          {/* Edit mode: full form */}
+          {editMode ? (
+            <div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+                <div><label style={b.label}>วันที่สอน</label><input type="date" value={form.teach_date} onChange={e=>sf("teach_date",e.target.value)} style={b.input}/></div>
+                <div><label style={b.label}>ชั้นเรียน</label><input value={session?.classes?.class_name||"—"} disabled style={{...b.input,background:"#F8FAFC",color:T.muted}}/></div>
               </div>
-            )}
-          </Section>}
-
-          {/* Assessment */}
-          {ass.length>0&&<Section title={`ผลการประเมิน (${ass.length} คน)`}>
-            {Object.entries(assGroups).map(([lv,list])=>(
-              <div key={lv} style={{marginBottom:6}}>
-                <span style={b.pill(ASSESS_CFG[lv]?.color||T.muted,ASSESS_CFG[lv]?.bg||"#F8FAFC")}>{ASSESS_CFG[lv]?.icon} {ASSESS_CFG[lv]?.label||lv}: {list.length} คน</span>
-                {list.some(a=>a.note)&&<div style={{fontSize:12,color:T.sub,marginTop:4,paddingLeft:8}}>{list.filter(a=>a.note).map(a=>`${a.students?.full_name}: ${a.note}`).join(" | ")}</div>}
-              </div>
-            ))}
-            <div style={{fontSize:13,color:T.sub,marginTop:6}}>
-              ผ่าน: <b style={{color:T.green}}>{ass.filter(a=>ASSESS_CFG[a.level]?.pass).length}</b> คน &nbsp;|&nbsp;
-              ต้องพัฒนา: <b style={{color:T.orange}}>{ass.filter(a=>!ASSESS_CFG[a.level]?.pass).length}</b> คน
+              <div style={b.fRow}><label style={b.label}>เรื่องที่สอน</label><input value={form.topic} onChange={e=>sf("topic",e.target.value)} style={b.input} placeholder="หัวข้อ / บทที่..."/></div>
+              <div style={b.fRow}><label style={b.label}>จุดประสงค์การเรียนรู้</label><textarea value={form.objective} onChange={e=>sf("objective",e.target.value)} style={b.textarea} placeholder="นักเรียนสามารถ..."/></div>
+              <div style={b.fRow}><label style={b.label}>กิจกรรมที่ใช้ในคาบ</label><textarea value={form.activities} onChange={e=>sf("activities",e.target.value)} style={b.textarea} placeholder="วิธีสอน / กิจกรรม Active Learning..."/></div>
+              <div style={{borderTop:`1px dashed ${T.border}`,paddingTop:16,marginBottom:14,fontSize:12.5,fontWeight:700,color:T.purple}}>บันทึกหลังสอน</div>
+              <div style={b.fRow}><label style={b.label}>✨ จุดเด่นของคาบ</label><textarea value={form.highlights} onChange={e=>sf("highlights",e.target.value)} style={{...b.textarea,minHeight:64}} placeholder="สิ่งที่ดี นักเรียนมีส่วนร่วม..."/></div>
+              <div style={b.fRow}><label style={b.label}>⚠️ ปัญหาที่พบ</label><textarea value={form.problems} onChange={e=>sf("problems",e.target.value)} style={{...b.textarea,minHeight:64}} placeholder="สิ่งที่ยังไม่ได้ผล..."/></div>
+              <div style={b.fRow}><label style={b.label}>🔧 สิ่งที่ต้องปรับปรุง</label><textarea value={form.improvements} onChange={e=>sf("improvements",e.target.value)} style={{...b.textarea,minHeight:64}} placeholder="จะปรับอะไรครั้งหน้า..."/></div>
+              <div style={b.fRow}><label style={b.label}>💭 Reflection ของครู</label><textarea value={form.reflection} onChange={e=>sf("reflection",e.target.value)} style={{...b.textarea,minHeight:80}} placeholder="ความรู้สึก / สิ่งที่ได้เรียนรู้..."/></div>
             </div>
-          </Section>}
+          ) : (
+            <div>
+              {/* View mode */}
+              {session.topic&&<div style={{background:`linear-gradient(135deg,${T.purpleL},${T.blueL})`,borderRadius:12,padding:"12px 16px",marginBottom:16}}>
+                <div style={{fontSize:16,fontWeight:700,color:T.purpleD,marginBottom:4}}>{session.topic}</div>
+                {session.objective&&<div style={{fontSize:13,color:T.sub}}>{session.objective}</div>}
+              </div>}
+              {session.activities&&<Section title="กิจกรรมการเรียนรู้"><div style={{fontSize:13.5,color:T.text,lineHeight:1.8,background:"#F8FAFC",borderRadius:10,padding:"10px 14px"}}>{session.activities}</div></Section>}
 
-          {/* Behavior */}
-          {beh.length>0&&<Section title={`พฤติกรรม/คะแนน (${beh.length} คน)`}>
-            <div style={{display:"flex",flexDirection:"column",gap:5}}>
-              {beh.map((bh,i)=>(
-                <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",borderRadius:8,background:bh.points>0?T.greenL:bh.points<0?T.redL:"#F8FAFC",fontSize:13}}>
-                  <span>{bh.icon||"📝"}</span>
-                  <span style={{flex:1}}>{bh.students?.student_no?`${bh.students.student_no}. `:""}{bh.students?.full_name||"—"}</span>
-                  {bh.points!==0&&<span style={{fontWeight:700,color:bh.points>0?T.green:T.red}}>{bh.points>0?"+":""}{bh.points}</span>}
-                  {bh.behavior&&<span style={{color:T.muted,fontSize:12}}>{bh.behavior}</span>}
+              {att.length>0&&<Section title={`การเข้าเรียน (${att.length} คน)`}>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
+                  {Object.entries(ATT_CFG).map(([k,c])=>attCounts[k]>0&&<span key={k} style={b.pill(c.color,c.bg)}>{c.label}: {attCounts[k]}</span>)}
                 </div>
-              ))}
+                {att.filter(a=>a.status!=="present").length>0&&(
+                  <div style={{background:T.orangeL,borderRadius:10,padding:"10px 14px",fontSize:13}}>
+                    <b>ไม่มาเรียน: </b>{att.filter(a=>a.status!=="present").map(a=>`${a.students?.full_name||"—"} (${ATT_CFG[a.status]?.label||a.status})`).join(", ")}
+                  </div>
+                )}
+              </Section>}
+
+              {ass.length>0&&<Section title={`ผลการประเมิน (${ass.length} คน)`}>
+                {Object.entries(assGroups).map(([lv,list])=>(
+                  <div key={lv} style={{marginBottom:6}}>
+                    <span style={b.pill(ASSESS_CFG[lv]?.color||T.muted,ASSESS_CFG[lv]?.bg||"#F8FAFC")}>{ASSESS_CFG[lv]?.icon} {ASSESS_CFG[lv]?.label||lv}: {list.length} คน</span>
+                    {list.some(a=>a.note)&&<div style={{fontSize:12,color:T.sub,marginTop:4,paddingLeft:8}}>{list.filter(a=>a.note).map(a=>`${a.students?.full_name}: ${a.note}`).join(" | ")}</div>}
+                  </div>
+                ))}
+                <div style={{fontSize:13,color:T.sub,marginTop:6}}>
+                  ผ่าน: <b style={{color:T.green}}>{ass.filter(a=>ASSESS_CFG[a.level]?.pass).length}</b> &nbsp;|&nbsp;
+                  ต้องพัฒนา: <b style={{color:T.orange}}>{ass.filter(a=>!ASSESS_CFG[a.level]?.pass).length}</b> คน
+                </div>
+              </Section>}
+
+              {beh.length>0&&<Section title={`พฤติกรรม/คะแนน (${beh.length} รายการ)`}>
+                <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                  {beh.map((bh,i)=>(
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",borderRadius:8,background:bh.points>0?T.greenL:bh.points<0?T.redL:"#F8FAFC",fontSize:13}}>
+                      <span>{bh.icon||"📝"}</span>
+                      <span style={{flex:1}}>{bh.students?.student_no?`${bh.students.student_no}. `:""}{bh.students?.full_name||"—"}</span>
+                      {bh.points!==0&&<span style={{fontWeight:700,color:bh.points>0?T.green:T.red}}>{bh.points>0?"+":""}{bh.points}</span>}
+                      {bh.behavior&&<span style={{color:T.muted,fontSize:12}}>{bh.behavior}</span>}
+                    </div>
+                  ))}
+                </div>
+              </Section>}
+
+              {(session.highlights||session.problems||session.improvements||session.reflection)&&(
+                <Section title="บันทึกหลังสอน">
+                  {[["✨ จุดเด่น",session.highlights,T.greenL],["⚠️ ปัญหา",session.problems,T.redL],["🔧 ปรับปรุง",session.improvements,T.yellowL],["💭 Reflection",session.reflection,T.blueL]].map(([k,v,bg])=>v&&(
+                    <div key={k} style={{marginBottom:8,padding:"10px 14px",background:bg,borderRadius:10,fontSize:13.5}}>
+                      <b style={{color:T.text}}>{k}: </b>{v}
+                    </div>
+                  ))}
+                </Section>
+              )}
             </div>
-          </Section>}
-
-          {/* Post-teaching notes */}
-          {(session.highlights||session.problems||session.improvements||session.reflection)&&(
-            <Section title="บันทึกหลังสอน">
-              {[["✨ จุดเด่น",session.highlights,T.greenL],["⚠️ ปัญหา",session.problems,T.redL],["🔧 ปรับปรุง",session.improvements,T.yellowL],["💭 Reflection",session.reflection,T.blueL]].map(([k,v,bg])=>v&&(
-                <div key={k} style={{marginBottom:8,padding:"10px 14px",background:bg,borderRadius:10,fontSize:13.5}}>
-                  <b style={{color:T.text}}>{k}: </b>{v}
-                </div>
-              ))}
-            </Section>
           )}
 
-          {/* Images */}
+          {/* Images — always shown */}
           <Section title="ภาพหลักฐานการจัดกิจกรรม">
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:12}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:8}}>
               {imgs.map((img,i)=>(
                 <div key={img.id} style={{position:"relative",aspectRatio:"4/3",borderRadius:12,overflow:"hidden",border:`1px solid ${T.border}`,background:"#F8FAFC"}}>
                   <img src={img.image_url} alt={`รูปที่ ${i+1}`} style={{width:"100%",height:"100%",objectFit:"cover"}} onError={e=>{e.target.style.display="none"}}/>
@@ -857,13 +923,13 @@ function SessionDetailModal({sb,session,onClose,toast,onReload}){
                 </div>
               ))}
               {imgs.length<3&&(
-                <div onClick={()=>!uploading&&imgRef.current?.click()} style={{aspectRatio:"4/3",borderRadius:12,border:`2px dashed ${T.border}`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,cursor:uploading?"wait":"pointer",background:"#F8FAFC",transition:"all 0.15s"}}>
+                <div onClick={()=>!uploading&&imgRef.current?.click()} style={{aspectRatio:"4/3",borderRadius:12,border:`2px dashed ${T.border}`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,cursor:uploading?"wait":"pointer",background:"#F8FAFC"}}>
                   {uploading?<Spin size={22}/>:<><Upload size={22} color={T.muted}/><span style={{fontSize:12,color:T.muted,fontWeight:600}}>แนบรูป</span><span style={{fontSize:11,color:T.muted}}>{3-imgs.length} รูปที่เหลือ</span></>}
                 </div>
               )}
             </div>
             <input ref={imgRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>{if(e.target.files[0]){uploadImage(e.target.files[0]);e.target.value=""}}}/>
-            <div style={{fontSize:12,color:T.muted}}>รองรับ JPG, PNG, WEBP · สูงสุด 3 รูป · ไม่เกิน 5MB/รูป</div>
+            <div style={{fontSize:12,color:T.muted}}>JPG, PNG, WEBP · สูงสุด 3 รูป · ไม่เกิน 5MB</div>
           </Section>
         </div>
       )}
