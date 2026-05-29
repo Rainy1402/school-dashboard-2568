@@ -992,8 +992,8 @@ export default function App(){
             <span style={{fontWeight:700,fontSize:15,color:T.text}}>MyClass</span>
           </div>
           <div style={{display:"flex",background:"#F1F5F9",borderRadius:12,padding:3,gap:2}}>
-            <button onClick={()=>setMode("teacher")} style={{padding:"6px 16px",borderRadius:9,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,background:mode==="teacher"?"#fff":transparent,color:mode==="teacher"?T.purple:T.muted,boxShadow:mode==="teacher"?"0 2px 8px rgba(0,0,0,0.08)":"none",transition:"all 0.2s"}}>🏫 ห้องครู</button>
-            <button onClick={()=>enterClassroom()} style={{padding:"6px 16px",borderRadius:9,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,background:mode==="classroom"?T.purple:transparent,color:mode==="classroom"?"#fff":T.muted,boxShadow:mode==="classroom"?"0 2px 8px "+T.purple+"44":"none",transition:"all 0.2s"}}>⚡ เริ่มสอน</button>
+            <button onClick={()=>setMode("teacher")} style={{padding:"6px 16px",borderRadius:9,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,background:mode==="teacher"?"#fff":"transparent",color:mode==="teacher"?T.purple:T.muted,boxShadow:mode==="teacher"?"0 2px 8px rgba(0,0,0,0.08)":"none",transition:"all 0.2s"}}>🏫 ห้องครู</button>
+            <button onClick={()=>enterClassroom()} style={{padding:"6px 16px",borderRadius:9,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,background:mode==="classroom"?T.purple:"transparent",color:mode==="classroom"?"#fff":T.muted,boxShadow:mode==="classroom"?"0 2px 8px "+T.purple+"44":"none",transition:"all 0.2s"}}>⚡ เริ่มสอน</button>
           </div>
           <div style={{width:80}}/>
         </div>
