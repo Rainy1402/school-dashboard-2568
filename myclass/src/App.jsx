@@ -12,6 +12,17 @@ import {
 
 const _s={}
 const store={get:k=>_s[k]??null,set:(k,v)=>{_s[k]=v},remove:k=>{delete _s[k]}}
+/* ─── MOBILE HOOK ─────────────────────────────────────────── */
+function useIsMobile(){
+  const[m,setM]=useState(()=>typeof window!=="undefined"&&window.innerWidth<768)
+  useEffect(()=>{
+    const h=()=>setM(window.innerWidth<768)
+    window.addEventListener("resize",h)
+    return()=>window.removeEventListener("resize",h)
+  },[])
+  return m
+}
+
 
 // ── SUPABASE CLIENT ───────────────────────────────────────────
 function createClient(baseUrl,apiKey){
@@ -274,23 +285,24 @@ function SetupScreen({onReady}){
 }
 
 // ── MODAL SHELL ───────────────────────────────────────────────
-function Modal({title,sub,onClose,footer,children,wide}){
+function Modal({title,sub,onClose,footer,children,wide,fullMobile}){
+  const m=useIsMobile()
   useEffect(()=>{const h=e=>{if(e.key==="Escape")onClose()};document.addEventListener("keydown",h);return()=>document.removeEventListener("keydown",h)},[onClose])
+  const isBottomSheet=m&&!fullMobile
   return(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={onClose}>
-      <div style={{...b.modal,width:wide||500}} onClick={e=>e.stopPropagation()}>
-        <div style={{padding:"18px 22px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
-          <div><div style={{fontSize:16,fontWeight:700,color:T.text}}>{title}</div>{sub&&<div style={{fontSize:12.5,color:T.muted,marginTop:2}}>{sub}</div>}</div>
-          <button onClick={onClose} style={{border:"none",background:"none",cursor:"pointer",padding:6,borderRadius:8,color:T.muted}}><X size={20}/></button>
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:100,display:"flex",alignItems:isBottomSheet?"flex-end":"center",justifyContent:"center",padding:isBottomSheet?"0":"16px"}} onClick={onClose}>
+      <div style={{background:"#fff",borderRadius:isBottomSheet?"20px 20px 0 0":"20px",width:"100%",maxWidth:m?"100%":(wide||500),maxHeight:m?"92vh":"92vh",display:"flex",flexDirection:"column",overflow:"hidden",boxShadow:"0 24px 60px rgba(0,0,0,0.25)"}} onClick={e=>e.stopPropagation()}>
+        <div style={{padding:"16px 18px",borderBottom:"1px solid "+T.border,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+          <div><div style={{fontSize:m?17:16,fontWeight:700,color:T.text}}>{title}</div>{sub&&<div style={{fontSize:12,color:T.muted,marginTop:2}}>{sub}</div>}</div>
+          <button onClick={onClose} style={{border:"none",background:"none",cursor:"pointer",padding:8,borderRadius:8,color:T.muted,minWidth:40,minHeight:40,display:"flex",alignItems:"center",justifyContent:"center"}}><X size={20}/></button>
         </div>
-        <div style={{padding:"20px 22px",overflowY:"auto",flex:1}}>{children}</div>
-        {footer&&<div style={{padding:"14px 22px",borderTop:`1px solid ${T.border}`,display:"flex",gap:10,flexShrink:0,background:"#FAFAFA"}}>{footer}</div>}
+        <div style={{padding:"18px",overflowY:"auto",flex:1}}>{children}</div>
+        {footer&&<div style={{padding:"14px 18px",borderTop:"1px solid "+T.border,display:"flex",gap:10,flexShrink:0,background:"#FAFAFA"}}>{footer}</div>}
       </div>
     </div>
   )
 }
 
-// ── CLASS & STUDENT MODALS ────────────────────────────────────
 function AddClassModal({sb,onClose,onDone,toast}){
   const[form,setForm]=useState({class_name:"",subject_name:"",color:CLASS_COLORS[0]});const[saving,setSaving]=useState(false)
   const f=(k,v)=>setForm(p=>({...p,[k]:v}))
@@ -704,6 +716,208 @@ function ClassroomSession({sb,classes,toast,onExit,onReload}){
   )
 }
 
+
+/* ─── SCORE SHEET ─────────────────────────────────────────── */
+const MAX_SCORE_COLS=20
+
+function ScoreSheet({sb,classId,className,toast}){
+  const m=useIsMobile()
+  const[students,setStudents]=useState([])
+  const[cols,setCols]=useState([])
+  const[scores,setScores]=useState({})
+  const[loading,setLoading]=useState(true)
+  const[saving,setSaving]=useState(false)
+  const[activeCols,setActiveCols]=useState(3)
+
+  useEffect(()=>{
+    if(!classId)return
+    setLoading(true)
+    Promise.all([
+      loadClassStudents(sb,classId,className),
+      sb.from("score_columns").select("*").eq("class_id",classId).order("col_index"),
+      sb.from("student_scores").select("*").eq("class_id",classId),
+    ]).then(([studs,colRes,scoreRes])=>{
+      setStudents(studs)
+      const existCols=colRes.data||[]
+      const allCols=Array.from({length:MAX_SCORE_COLS},(_,i)=>{
+        const ex=existCols.find(c=>c.col_index===i+1)
+        return ex||{col_index:i+1,title:"",max_score:10,class_id:classId}
+      })
+      setCols(allCols)
+      const sm={}
+      ;(scoreRes.data||[]).forEach(s=>{sm[s.student_id+"_"+s.col_index]=s.score})
+      setScores(sm)
+      const maxUsed=Math.max(...(colRes.data||[]).map(c=>c.col_index),3)
+      setActiveCols(Math.min(maxUsed+1,MAX_SCORE_COLS))
+    }).finally(()=>setLoading(false))
+  },[classId])
+
+  const setScore=(sid,ci,val)=>setScores(p=>({...p,[sid+"_"+ci]:val===""?null:parseFloat(val)||0}))
+  const getScore=(sid,ci)=>scores[sid+"_"+ci]??""
+  const getTotal=(sid)=>Array.from({length:activeCols},(_,i)=>scores[sid+"_"+(i+1)]||0).reduce((a,b)=>a+b,0)
+  const getMax=()=>cols.slice(0,activeCols).reduce((a,c)=>a+(parseFloat(c.max_score)||0),0)
+  const updateCol=(ci,field,val)=>setCols(p=>p.map(c=>c.col_index===ci?{...c,[field]:val}:c))
+
+  const saveAll=async()=>{
+    setSaving(true)
+    try{
+      const colsToSave=cols.slice(0,activeCols).map(c=>({class_id:classId,col_index:c.col_index,title:c.title||"",max_score:parseFloat(c.max_score)||10}))
+      const{error:ce}=await sb.from("score_columns").upsert(colsToSave,{onConflict:"class_id,col_index"})
+      if(ce)throw new Error(ce.message)
+      const scoreRecs=[]
+      students.forEach(st=>{
+        for(let i=1;i<=activeCols;i++){
+          const key=st.id+"_"+i
+          if(scores[key]!==undefined&&scores[key]!==null&&scores[key]!==""){
+            scoreRecs.push({class_id:classId,student_id:st.id,col_index:i,score:parseFloat(scores[key])||0})
+          }
+        }
+      })
+      if(scoreRecs.length){const{error:se}=await sb.from("student_scores").upsert(scoreRecs,{onConflict:"class_id,student_id,col_index"});if(se)throw new Error(se.message)}
+      toast.ok("บันทึกคะแนนแล้ว ✅")
+    }catch(e){toast.err("บันทึกไม่ได้: "+e.message)}finally{setSaving(false)}
+  }
+
+  if(loading)return <PageLoad text="กำลังโหลดคะแนน..."/>
+  if(!students.length)return <EmptyState icon="👥" msg="ไม่พบนักเรียน" sub="ตรวจสอบชื่อห้องเรียน (เช่น ม.1/1)"/>
+
+  const visibleCols=cols.slice(0,activeCols)
+  const maxTotal=getMax()
+
+  return(
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+        <div style={{fontSize:14,fontWeight:700,color:T.text,flex:1}}>{students.length} คน · {activeCols} ช่อง · รวม {maxTotal} คะแนน</div>
+        <div style={{display:"flex",gap:6}}>
+          {activeCols<MAX_SCORE_COLS&&<button onClick={()=>setActiveCols(p=>Math.min(p+1,MAX_SCORE_COLS))} style={{padding:"7px 12px",border:"1px solid "+T.border,borderRadius:9,cursor:"pointer",background:"#fff",fontFamily:"inherit",fontSize:13,color:T.purple,display:"flex",alignItems:"center",gap:4}}><Plus size={13}/>เพิ่มช่อง</button>}
+          {activeCols>1&&<button onClick={()=>setActiveCols(p=>Math.max(p-1,1))} style={{padding:"7px 12px",border:"1px solid "+T.border,borderRadius:9,cursor:"pointer",background:"#fff",fontFamily:"inherit",fontSize:13,color:T.red,display:"flex",alignItems:"center",gap:4}}><Minus size={13}/>ลด</button>}
+          <button onClick={saveAll} disabled={saving} style={{padding:"7px 14px",background:T.green,color:"#fff",border:"none",borderRadius:9,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,display:"flex",alignItems:"center",gap:5,opacity:saving?0.7:1}}>
+            {saving?<><Spin size={14} color="#fff"/>บันทึก...</>:<><Save size={14}/>บันทึก</>}
+          </button>
+        </div>
+      </div>
+      <div style={{overflowX:"auto",borderRadius:14,border:"1px solid "+T.border,background:"#fff"}}>
+        <table style={{borderCollapse:"collapse",minWidth:"100%"}}>
+          <thead>
+            <tr style={{background:"#F8FAFC"}}>
+              <th style={{padding:"8px 12px",fontSize:12.5,color:T.muted,fontWeight:700,textAlign:"left",borderBottom:"1px solid "+T.border,borderRight:"1px solid "+T.border,position:"sticky",left:0,background:"#F8FAFC",minWidth:m?130:170,zIndex:2}}>ชื่อ-สกุล</th>
+              {visibleCols.map(c=>(
+                <th key={c.col_index} style={{padding:"6px 8px",fontSize:12,color:T.text,fontWeight:600,textAlign:"center",borderBottom:"1px solid "+T.border,borderRight:"1px solid #F1F5F9",minWidth:76}}>
+                  <input value={c.title} onChange={e=>updateCol(c.col_index,"title",e.target.value)} placeholder={"งาน "+c.col_index} style={{width:68,border:"1px solid "+T.border,borderRadius:6,padding:"3px 5px",fontSize:11.5,fontFamily:"inherit",outline:"none",textAlign:"center",background:"transparent"}}/>
+                </th>
+              ))}
+              <th style={{padding:"8px 10px",fontSize:12.5,color:T.purple,fontWeight:700,textAlign:"center",borderBottom:"1px solid "+T.border,minWidth:68,background:T.purpleL}}>รวม</th>
+            </tr>
+            <tr style={{background:"#FEFEFE"}}>
+              <td style={{padding:"5px 12px",fontSize:11.5,color:T.muted,borderBottom:"1px solid "+T.border,borderRight:"1px solid "+T.border,position:"sticky",left:0,background:"#FEFEFE",zIndex:2}}>เต็ม</td>
+              {visibleCols.map(c=>(
+                <td key={c.col_index} style={{padding:"4px 8px",textAlign:"center",borderBottom:"1px solid "+T.border,borderRight:"1px solid #F1F5F9"}}>
+                  <input type="number" value={c.max_score} onChange={e=>updateCol(c.col_index,"max_score",e.target.value)} style={{width:50,border:"1px solid "+T.border,borderRadius:6,padding:"3px 5px",fontSize:12,fontFamily:"inherit",outline:"none",textAlign:"center"}}/>
+                </td>
+              ))}
+              <td style={{padding:"5px 10px",textAlign:"center",borderBottom:"1px solid "+T.border,fontSize:12.5,fontWeight:700,color:T.purple,background:T.purpleL+"44"}}>{maxTotal}</td>
+            </tr>
+          </thead>
+          <tbody>
+            {students.map((st,idx)=>{
+              const total=getTotal(st.id)
+              const pct=maxTotal>0?Math.round(total/maxTotal*100):0
+              return(
+                <tr key={st.id} style={{background:idx%2===0?"#fff":"#FAFAFA"}}>
+                  <td style={{padding:"8px 12px",fontSize:m?13:13.5,borderBottom:"1px solid #F8FAFC",borderRight:"1px solid "+T.border,position:"sticky",left:0,background:idx%2===0?"#fff":"#FAFAFA",zIndex:1}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <div style={{width:28,height:28,borderRadius:"50%",background:AVATAR_COLORS[idx%8],display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:"#fff",flexShrink:0}}>{(st.full_name||"?")[0]}</div>
+                      <div>
+                        <div style={{fontWeight:600,color:T.text,fontSize:m?12.5:13,whiteSpace:"nowrap"}}>{st.full_name}</div>
+                        <div style={{fontSize:11,color:T.muted}}>เลขที่ {st.student_no||"—"}</div>
+                      </div>
+                    </div>
+                  </td>
+                  {visibleCols.map(c=>(
+                    <td key={c.col_index} style={{padding:"5px 7px",textAlign:"center",borderBottom:"1px solid #F8FAFC",borderRight:"1px solid #F1F5F9"}}>
+                      <input type="number" min="0" max={c.max_score} value={getScore(st.id,c.col_index)} onChange={e=>setScore(st.id,c.col_index,e.target.value)}
+                        style={{width:50,border:"1px solid "+T.border,borderRadius:8,padding:"6px 4px",fontSize:13,fontFamily:"inherit",outline:"none",textAlign:"center",background:"transparent"}}
+                        onFocus={e=>e.target.style.borderColor=T.purple} onBlur={e=>e.target.style.borderColor=T.border}/>
+                    </td>
+                  ))}
+                  <td style={{padding:"7px 10px",textAlign:"center",borderBottom:"1px solid #F8FAFC",background:pct>=80?(T.greenL+"99"):pct>=50?(T.yellowL+"99"):(T.redL+"99")}}>
+                    <div style={{fontSize:14,fontWeight:800,color:pct>=80?T.green:pct>=50?T.yellow:T.red}}>{total}</div>
+                    <div style={{fontSize:10.5,color:T.muted}}>{pct}%</div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{fontSize:12,color:T.muted,marginTop:8}}>💡 คลิกชื่อช่องเพื่อตั้งชื่องาน · แก้คะแนนเต็มได้ · กด บันทึก เมื่อเสร็จ</div>
+    </div>
+  )
+}
+
+/* ─── CLASS DETAIL ─────────────────────────────────────────── */
+function ClassDetail({sb,cls,toast,onBack,onEnterClass}){
+  const m=useIsMobile()
+  const[activeTab,setActiveTab]=useState("sessions")
+  const sessQ=useQ(async()=>{
+    if(!cls?.id)return[]
+    const{data,error}=await sb.from("teaching_sessions").select("*").eq("class_id",cls.id).order("teach_date",{ascending:false})
+    if(error)throw new Error(error.message);return data||[]
+  },[sb,cls?.id])
+  const sessions=sessQ.data||[]
+
+  return(
+    <div style={{display:"flex",flexDirection:"column",height:"100%",background:T.slate}}>
+      <div style={{background:"#fff",borderBottom:"1px solid "+T.border,flexShrink:0}}>
+        <div style={{padding:"12px 16px",display:"flex",alignItems:"center",gap:12}}>
+          <button onClick={onBack} style={{border:"none",background:"none",cursor:"pointer",padding:8,borderRadius:8,color:T.sub,minWidth:36,minHeight:36,display:"flex",alignItems:"center",justifyContent:"center"}}><ChevronLeft size={22}/></button>
+          <div style={{width:42,height:42,borderRadius:13,background:(cls.color||T.purple)+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:800,color:cls.color||T.purple,flexShrink:0}}>{cls.class_name?.[0]}</div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:18,fontWeight:700,color:T.text}}>{cls.class_name}</div>
+            <div style={{fontSize:13,color:T.muted}}>{cls.subject_name} · {cls._studentCount||0} คน</div>
+          </div>
+          <button onClick={()=>onEnterClass(cls)} style={{background:cls.color||T.purple,color:"#fff",border:"none",borderRadius:12,padding:"9px 14px",cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,display:"flex",alignItems:"center",gap:5,flexShrink:0}}>⚡ สอน</button>
+        </div>
+        <div style={{display:"flex",padding:"0 16px"}}>
+          {[{id:"sessions",label:"📋 บันทึกการสอน"},{id:"scores",label:"📊 คะแนน"}].map(t=>(
+            <button key={t.id} onClick={()=>setActiveTab(t.id)} style={{flex:1,padding:"10px 0",border:"none",background:"none",cursor:"pointer",fontFamily:"inherit",fontSize:14,fontWeight:600,color:activeTab===t.id?cls.color||T.purple:T.muted,borderBottom:activeTab===t.id?"2.5px solid "+(cls.color||T.purple):"2.5px solid transparent",transition:"all 0.15s"}}>{t.label}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{flex:1,overflowY:"auto",padding:"16px"}}>
+        {activeTab==="sessions"&&<>
+          {sessions.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
+            {[{label:"คาบทั้งหมด",v:sessions.length,c:T.purple,bg:T.purpleL},{label:"บันทึกแล้ว",v:sessions.filter(s=>s.status==="saved").length,c:T.green,bg:T.greenL},{label:"ยังเป็นร่าง",v:sessions.filter(s=>s.status==="draft").length,c:T.orange,bg:T.orangeL}].map((it,i)=>(
+              <div key={i} style={{background:"#fff",borderRadius:12,border:"1px solid "+T.border,padding:"12px",textAlign:"center"}}>
+                <div style={{fontSize:22,fontWeight:800,color:it.c}}>{it.v}</div>
+                <div style={{fontSize:11.5,color:T.muted,marginTop:2}}>{it.label}</div>
+              </div>
+            ))}
+          </div>}
+          {sessQ.loading?<PageLoad/>:!sessions.length?<EmptyState icon="📋" msg="ยังไม่มีบันทึก" sub="กด สอน เพื่อเริ่ม" btn={<button onClick={()=>onEnterClass(cls)} style={{background:cls.color||T.purple,color:"#fff",border:"none",borderRadius:12,padding:"10px 20px",cursor:"pointer",fontFamily:"inherit",fontSize:14,fontWeight:600}}>⚡ เริ่มสอนเลย</button>}/>:(
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {sessions.map(sess=>(
+                <div key={sess.id} style={{background:"#fff",borderRadius:14,border:"1px solid "+T.border,padding:"14px 16px",display:"flex",alignItems:"center",gap:12}}>
+                  <div style={{width:46,height:46,borderRadius:12,background:(cls.color||T.purple)+"15",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                    <div style={{fontSize:15,fontWeight:800,color:cls.color||T.purple,lineHeight:1}}>{sess.teach_date?new Date(sess.teach_date).toLocaleDateString("th-TH",{day:"numeric"}):"—"}</div>
+                    <div style={{fontSize:10,color:T.muted}}>{sess.teach_date?new Date(sess.teach_date).toLocaleDateString("th-TH",{month:"short"}):""}</div>
+                  </div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:14,fontWeight:600,color:T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sess.topic||"ไม่ระบุหัวข้อ"}</div>
+                    <div style={{fontSize:12,color:T.muted,marginTop:2}}>{sess.teach_date?new Date(sess.teach_date).toLocaleDateString("th-TH",{weekday:"short",month:"long",day:"numeric"}):""}</div>
+                  </div>
+                  <span style={{padding:"4px 10px",borderRadius:99,fontSize:11.5,fontWeight:700,background:sess.status==="saved"?T.greenL:T.yellowL,color:sess.status==="saved"?T.green:T.yellow,flexShrink:0}}>{sess.status==="saved"?"✓":"ร่าง"}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>}
+        {activeTab==="scores"&&<ScoreSheet sb={sb} classId={cls.id} className={cls.class_name} toast={toast}/>}
+      </div>
+    </div>
+  )
+}
+
 // ── TEACHER ROOM ──────────────────────────────────────────────
 // ── SESSION DETAIL MODAL ──────────────────────────────────────
 function SessionDetailModal({sb,session,onClose,toast,onReload}){
@@ -937,19 +1151,22 @@ function SessionDetailModal({sb,session,onClose,toast,onReload}){
   )
 }
 
-function TeacherRoom({sb,toast,onEnterClass}){
+function TeacherRoom({sb,toast,onEnterClass,profile:profileProp,onOpenProfile}){
+  const m=useIsMobile()
   const[tab,setTab]=useState("home")
   const[modal,setModal]=useState(null)
   const[viewSession,setViewSession]=useState(null)
+  const[selectedClass,setSelectedClass]=useState(null)
   const[search,setSearch]=useState("")
   const[filterLv,setFilterLv]=useState("ทั้งหมด")
 
   const dashQ=useDash(sb);const clsQ=useClasses(sb);const stuQ=useStudents(sb,search,filterLv)
   const allSessQ=useAllSessions(sb);const profQ=useProfile(sb)
   const stats=dashQ.data||{students:0,classes:0,sessions:0,drafts:[],att:{present:0,absent:0,late:0,leave:0,total:0}}
-  const classes=clsQ.data||[];const students=stuQ.data||[];const allSess=allSessQ.data||[];const profile=profQ.data
+  const classes=clsQ.data||[];const students=stuQ.data||[];const allSess=allSessQ.data||[];const profile=profileProp||profQ.data
 
   const reloadAll=()=>{dashQ.reload();clsQ.reload();stuQ.reload();allSessQ.reload();profQ.reload()}
+  if(selectedClass)return <ClassDetail sb={sb} cls={selectedClass} toast={toast} onBack={()=>setSelectedClass(null)} onEnterClass={onEnterClass}/>
 
   const handleBackup=async()=>{
     try{
@@ -1162,6 +1379,17 @@ function TeacherRoom({sb,toast,onEnterClass}){
       </div>
 
       {/* Modals */}
+
+        {/* Mobile bottom nav */}
+        {m&&<div style={{background:"#fff",borderTop:"1px solid "+T.border,display:"grid",gridTemplateColumns:"repeat(4,1fr)",flexShrink:0}}>
+          {[{id:"home",icon:Home,label:"หน้าหลัก"},{id:"classes",icon:School,label:"ชั้นเรียน"},{id:"students",icon:Users,label:"นักเรียน"},{id:"sessions",icon:BookOpen,label:"บันทึก"}].map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"10px 4px 8px",border:"none",background:"none",cursor:"pointer",fontFamily:"inherit",display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+              <t.icon size={20} color={tab===t.id?T.purple:T.muted}/>
+              <span style={{fontSize:10,fontWeight:600,color:tab===t.id?T.purple:T.muted}}>{t.label}</span>
+            </button>
+          ))}
+        </div>}
+
       {modal==="addClass"&&<AddClassModal sb={sb} onClose={()=>setModal(null)} onDone={()=>{clsQ.reload();dashQ.reload()}} toast={toast}/>}
       {modal==="addStu"&&<AddStudentModal sb={sb} onClose={()=>setModal(null)} onDone={()=>{stuQ.reload();dashQ.reload()}} toast={toast}/>}
       {modal==="paste"&&<PasteModal sb={sb} onClose={()=>setModal(null)} onDone={()=>{stuQ.reload();dashQ.reload()}} toast={toast}/>}
@@ -1237,7 +1465,7 @@ export default function App(){
 
         {/* Content */}
         <div style={{flex:1,overflow:"hidden"}}>
-          {mode==="teacher"&&<TeacherRoom sb={sb} toast={toast} onEnterClass={enterClassroom}/>}
+          {mode==="teacher"&&<TeacherRoom sb={sb} toast={toast} onEnterClass={enterClassroom} profile={profQ?.data} onOpenProfile={()=>setShowProfile&&setShowProfile(true)}/>}
           {mode==="classroom"&&<ClassroomSession sb={sb} classes={classes} toast={toast} onExit={()=>setMode("teacher")} onReload={clsQ.reload}/>}
         </div>
       </div>
